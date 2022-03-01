@@ -1,0 +1,169 @@
+---
+title: "GR5018 Assignment #1"
+author: "Yun Choi"
+date: "2/19/2022"
+output: pdf_document
+---
+
+```{r include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(readr)
+library(tidyverse)
+library(janitor)
+library(mlogit)
+library(nnet)
+```
+
+## Model Selection
+I choose a multiple multinomial logistic regression model to examine how different party affiliations have differential impacts on one's selection of voting method. The specification and variables for my model are as below: 
+
+$$
+VotingMethod = \beta 1Party + \beta 2Age + \beta 3White + \beta 4Gender + \beta 5TravelDistance + e
+$$
+
+* Variables:
+ + Dependent: VotingMethod (categorical) - 'IN-PERSON' if voted in person on Election Day; 'EARLY IN-PERSON' if voted early in person; 'MAIL' if casted a mail ballot
+ + Main independent: Party (categorical) - 'REP' if Republican; 'DEM' if Democrat; 'UNA' if unaffiliated
+ + Control 1: Age (continuous) - age of voter as of 2020
+ + Control 2: White (binary) - '1' if non-Hispanic white; 0 if not non-Hispanic white
+ + Control 3: Gender (categorical) - 'M' if male; 'F' if female
+ + Control 4: TravelDistance (continuous) - Distance between residence and a designated polling location in mile
+
+A multiple multinomial logistric regression model is the right choice for this regression task for two reasons. First, it allows the use of an unordered categorical dependent variable and independent variables of different types. The dependent variable VotingMethod in my model consists of three categories: 'IN-PERSON', 'EARLY IN-PERSON', and 'MAIL'. The model also has two types of independent variables. 'Age' and 'TravelDistance' are continuous, and 'Party', 'White', and 'Gender' are categorical.
+
+Second, a multinomial logistic regression model creates a model with the same specification for each category in the dependent variable. Unlike having a uniform model for different categories, this appoach estimates the category-specific heterogeneous coefficients. This allows me to explore how each party affiliation has a differential impact on the probability of choosing each voting method.  
+
+## Hypothesis
+I examine the following hypothesis: Being a registered Republican (as opposed to being a Democrat) decreases the probability of voting by 'MAIL', even when controlling for voter age, race, sex, and distance to a designated polling location (controlled variables). I believe my hypothesis is true because many Republican politicians and members have continued their attacks on mail-in voting throughout the modern election history. During the 2020 presidential election, where many states expanded and encouraged mail-in voting due to the COVID-19 pandemic and the health risk of casting an in-person ballot, only 30% of Republicans voted by mail. In comparison, nearly 60% of Democrats cast a mail-in ballot.
+
+I control for voter age and distance to a polling place because age and travel distance are two primary factors in deciding whether to vote by mail. The older the voter, and the longer the travel distance, the higher the voter's incentive to VBM and save the trip. I also control for voter race and gender because white, and male voters are likely to have a higher socioeconomic status than non-white, and female voters, respectively, which is also one of the strong predictors for a high probability of voting by mail.
+
+## Data Description
+Here, I use the dataset I created by (1) linking various election datasets - voter registration, voter history, and polling places - from North Carolina; (2) randomly sampling a subset of the entire state voter population; and (3) geocoding and calculating the distance between residence and a designated polling place for each sampled voter. 
+
+```{r}
+final_dist_no_outliers <- read_csv("final_dist_no_outliers.csv")
+```
+
+```{r}
+data_for_mlogit <- final_dist_no_outliers %>%
+  # Dependent variable - categorical
+  mutate(VotingMethod = 
+           case_when(
+             voting_method == "ABSENTEE BY MAIL" ~ "MAIL",
+             voting_method ==  "IN-PERSON" ~ "IN-PERSON", 
+             voting_method %in% 
+               c("ABSENTEE CURBSIDE", "ABSENTEE ONESTOP") ~ "EARLY IN-PERSON",
+             TRUE ~ "NA")) %>%
+  # Remove methods outside these three
+  filter(VotingMethod %in% 
+           c("MAIL", "IN-PERSON", "EARLY IN-PERSON")) %>%
+  # Independent variable #1: Age
+  mutate(Age = 2021 - birth_year) %>%
+  # Independent variable #2: Party 
+  filter(voted_party_cd %in% 
+           c("UNA", "REP", "DEM")) %>%
+  # Independent variable #3: White
+  mutate(White = if_else(race_code == "W" & ethnic_code == "NL", 
+                         1, 0)) %>%
+  # Independent variable #4: Gender
+  filter(gender_code %in% c("M", "F")) %>%
+  # Rename column names for more intuitive interpretation
+  rename(Party = voted_party_cd, 
+         Gender = gender_code, 
+         TravelDistance = distance) %>%
+  mutate(id = row_number())
+```
+
+```{r}
+data_for_mlogit_final <- mlogit.data(data = data_for_mlogit, varying=NULL, 
+                                     shape = "wide", choice = "VotingMethod", id.var = "id")
+
+ml_1 = mlogit(VotingMethod ~ 0 | 
+                as.factor(Party) + Age + White + as.factor(Gender) + TravelDistance, 
+              data=data_for_mlogit_final, reflevel = "EARLY IN-PERSON")
+summary(ml_1)
+```
+
+## Results in Logit
+
+First, I look at how the estimates related to Republicans change. The estimate of 0.31 on 'REP:IN-PERSON' can be interpreted as below: being a registered Republican, on average, increases the logit of voting "IN-PERSON" (compared to voting "EARLY IN-PERSON") by 0.31, controlling for voter age, race, gender, and distance to a designated polling location. The estimate of -0.82 on 'REP:MAIL' shows that: Being Republican, on average, decreases the logit of voting by "MAIL" (compared to voting "EARLY IN-PERSON") by 0.82, controlling for the same variables. Both estimates are statistically significant with near-zero p-values.
+
+Then, I look at how the estimates related to the independent change. The estimate of 0.25 on 'UNA:IN-PERSON' can be interpreted as below: being an independent, on average, increases the logit of voting "IN-PERSON" (compared to voting "EARLY IN-PERSON") by 0.25, controlling for voter age, race, gender, and distance to a designated polling location. The estimate of -0.05 on 'UNA:MAIL' shows that: Being Republican, on average, decreases the logit of voting by "MAIL" (compared to voting "EARLY IN-PERSON") by 0.05, controlling for the same variables. Although the second estimate is not statistically significant with a p-value of 0.08, comparing the estimate (-0.05) with its equivalent for Republican (-0.82) implies that the preferance gap between "EARLY IN-PERSON" AND "MAIL" is much bigger for Republicans than the independent.
+
+Because the estimates are in the unit of logit and have different standard errors, it is hard to compare them without computation. Therefore, I run the Z-test to see if the two estimates are indeed different, given their standard errors.  
+
+## Z-test
+```{r}
+test = ((0.82313778 - 0.05656222)^2)/(0.03676547^2 + 0.03224555^2)
+format(pchisq(test, df = 1, lower.tail = FALSE), scientific = FALSE)
+```
+The result shows that the slope of 'REP' for going from "EARLY IN-PERSON" -> "MAIL" (0.82) is not equal to the slope of 'UNA' for going from "EARLY IN-PERSON" -> "MAIL" (0.05). The below 0.01 p-value from the Chi-square test above shows that we can reject the null hypothesis that the two slopes are the same at a 99% confidence level. 
+
+## Results in Relative Risk Ratios (RRRs)
+```{r}
+exp(coef(ml_1))
+```
+
+Exponentiating the coefficients produces relative risk ratios (RRRs). RRRs in a multinomial logistic model can be interpreted in the same way odds-ratios (ORs) can be in a binary logistic regression. 
+
+An RRR of 1 means that given a one-unit change in that independent variable, there is an equal chance of the event happening as not happening. An RRR above 1 indicates that given a one-unit change in that independent variable, there is a lower chance of the event happening than not happening. An RRR below 1, on the other hand, indicates that given a one-unit change in the independent variable, there is a higher chance of the event happening than not happening. 
+
+The RRR on 'REP:IN-PERSON' can be interpreted as below: For being a registered Republican (as opposed to Democrat), on average, the odds of voting "IN-PERSON", compared to voting "EARLY IN-PERSON", increases by 36% (1.36-1 = 0.36), controlling for voter age, race, sex, and distance to a designated polling location. The RRR on 'REP:MAIL' can be interpreted as below: For being Republican (as opposed to Democrat), the odds of voting by "MAIL" (compared to voting "EARLY IN-PERSON") decreases by 56% (0.44-1 = -0.56), controlling for the same variables. The RRR on 'UNA:MAIL' can be interpreted as below: For being an independent (as oppsed to Democrat), the odds of voting by "MAIL" (compared to voting "EARLY IN-PERSON") decreases by 5% (0.95-1 = -0.5), controlling for the same variables.
+
+To sum up, holding voter age, race, gender, and distance to a polling place constant, being a registered Republican makes the voter to prefer voting in person on Election Day most over voting early in person or by mail. The disparity in the level of preference among Republicans between voting early in person and by mail is much bigger that that between voting early in person and voting in person on Election Day. 
+
+Also, net of voter age, race, gender, and distance to a polling place constant, Republicans have a bigger preference gap between 'EARLY IN-PERSON' and 'MAIL' than the independent. It implies that Republicans have a stronger distate for voting by mail than voting early in person compared to the independent. 
+
+Although more interpretive than logits, RRRs are still not as intuitive as probabilities. To yield specific probabilites of choosing each voting method for different populations, I create a predictions below. 
+
+## Predictions 
+```{r}
+# Create a dataframe of values to use for predictions
+data_party <- expand.grid(
+  Age = mean(data_for_mlogit_final$Age, na.rm = TRUE), # let age as the mean
+  Party = c("REP", "DEM", "UNA"),  # list all three voting method
+  Gender = "M", # fix gender as male
+  White = 1, # fix race at white
+  TravelDistance = 1)
+
+# Reformat the dependent variable to put in multinom() function
+data_for_mlogit$VM <- relevel(as.factor(data_for_mlogit$VotingMethod), 
+                              ref = "EARLY IN-PERSON")
+
+# Fit the model
+ml_2 = multinom(VM ~ Age + as.factor(Party) + White + as.factor(Gender) + TravelDistance, 
+                data=data_for_mlogit)
+
+# Create a prediction for each voter
+pred <- predict(ml_2, type = "probs")
+
+predict(ml_2, newdata = data_party, type = "probs", se = TRUE)
+
+# Feed the dataframe created above to get predictions for specific populations
+preds_party <- data.frame( 
+  Party = data_party$Party,
+  predict(ml_2, newdata = data_party, type = "probs", se = TRUE)) 
+
+print(preds_party)
+```
+
+The table above shows the probability of a typical 51-year-old white male living a mile away from his designated polling location, choosing each voting across the political spectrum. I set the 'age' as 51 because it is the mean of all voters in the dataset. I set 'race', 'gender', and 'travel distance' as white, male and 1 mile for simplicity's sake. 
+
+The table shows: 
+
+  + A **Republican** 51-year-old white male living a mile away from his designated polling location typically has: 
+  + 64% of probability of voting early in person;
+  + 25% of probability of voting in person on Election Day;
+  + 10% of probability of voting by mail.
+  + A **Democrat** 51-year-old white male living a mile away from his designated polling location typically has:
+  + 60% of probability of voting early in person;
+  + 17% of probability of voting in person on Election Day;
+  + 22% of probability of voting by mail.
+  + An **Independent** 51-year-old white male living a mile away from his designated polling location typically has:
+  + 58% of probability of voting early in person;
+  + 21% of probability of voting in person on Election Day;
+  + 20% of probability of voting by mail. 
+  
+Such predictions, although without statistics to prove significance, confirm my hypothesis that being a registered Republican (as opposed to being a Democrat) decreases the probability of voting by mail, even when controlling for voter age, race, sex, and distance to a designated polling location. In fact, the numbers above show that a typical 51-year-old white male Democrat living a mile away from his designated polling location has more than twice the probability to vote by mail than his Republican counterpart. 
